@@ -7,13 +7,48 @@ name = "sglang"
 version = "0.4.5"
 description = "SGLang is yet another fast serving framework for large language models and vision language models."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.12"
 license = { file = "LICENSE" }
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: Apache Software License",
 ]
-dependencies = ["aiohttp", "requests", "tqdm", "numpy", "IPython", "setproctitle"]
+dependencies = [
+    "aiohttp",
+    "requests",
+    "tqdm",
+    "numpy",
+    "IPython",
+    "setproctitle",
+    "torch==2.5.1",
+    "transformers>=4.49.0",
+    "boto3>=1.37.34",
+    "einops>=0.8.1",
+    "pydantic>=2.11.3",
+    "outlines>=0.1.11",
+    "sgl-kernel>=0.0.8.post3",
+    "fastapi>=0.115.12",
+    "orjson>=3.10.16",
+    "uvicorn>=0.34.1",
+    "uvloop>=0.21.0",
+    "psutil>=7.0.0",
+    "zmq>=0.0.0",
+    "pillow>=11.2.1",
+    "torchvision>=0.19.0",
+    "opencv-python>=4.9.0.80",
+    "diffusers>=0.31.0",
+    "transformers>=4.49.0",
+    "tokenizers>=0.20.3",
+    "accelerate>=1.1.1",
+    "imageio==2.37.0",
+    "easydict==1.13",
+    "ftfy==6.3.1",
+    "dashscope==1.23.1",
+    "imageio-ffmpeg==0.6.0",
+    "flash_attn",
+    "gradio>=5.0.0",
+    "numpy>=1.23.5,<2",
+]
 
 [project.optional-dependencies]
 runtime_common = [
@@ -68,14 +103,14 @@ blackwell = [
     "einops",
 ]
 
-# HIP (Heterogeneous-computing Interface for Portability) for AMD
-# => base docker rocm/vllm-dev:20250114, not from public vllm whl
-srt_hip = [
-    "sglang[runtime_common]",
-    "torch",
-    "vllm==0.6.7.dev2",
-    "outlines==0.1.11"
-]
+## HIP (Heterogeneous-computing Interface for Portability) for AMD
+## => base docker rocm/vllm-dev:20250114, not from public vllm whl
+#srt_hip = [
+#    "sglang[runtime_common]",
+#    "torch",
+#    "vllm==0.6.7.dev2",
+#    "outlines==0.1.11"
+#]
 
 # xpu is not enabled in public vllm and torch whl,
 # need to follow https://docs.vllm.ai/en/latest/getting_started/xpu-installation.htmlinstall vllm
@@ -145,3 +180,7 @@ exclude = [
     "scripts*",
     "tests*",
 ]
+
+[[tool.uv.index]]
+url = "https://mirrors.ivolces.com/pypi/simple/"
+default = true

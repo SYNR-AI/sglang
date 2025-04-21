@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field, root_validator
 from typing_extensions import Literal
+from sglang.srt.models.wan.utils.utils import str2bool
 
 
 class ModelCard(BaseModel):
@@ -145,6 +146,35 @@ class BatchResponse(BaseModel):
     request_counts: Optional[dict] = None
     metadata: Optional[dict] = None
 
+class GenerationRequest(BaseModel):
+    # 业务参数
+    task: str = "t2v-14B"
+    model: str = task
+    height: int = 1280
+    width: int = 720
+    size: str = f"{width}*{height}"
+    duration: int = 5
+    fps: int = 16
+    frame_num: int = duration * fps + 1
+    ckpt_dir: str = None
+    offload_model: bool = False
+    ulysses_size: int = 1
+    ring_size: int = 1
+    t5_fsdp: bool = False
+    t5_cpu: bool = False
+    dit_fsdp: bool = False
+    save_file: str = None
+    prompt: str = None
+    use_prompt_extend: bool = False
+    prompt_extend_method: str = "local_qwen"
+    prompt_extend_model: str = None
+    prompt_extend_target_lang: str = "zh"
+    base_seed: int = -1
+    image: str = None
+    sample_solver: str = 'unipc'
+    sample_steps: int = None
+    sample_shift: float = None
+    sample_guide_scale: float = 5.0
 
 class CompletionRequest(BaseModel):
     # Ordered by official OpenAI API documentation

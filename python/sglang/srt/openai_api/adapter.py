@@ -40,6 +40,7 @@ from sglang.srt.conversation import (
 )
 from sglang.srt.function_call_parser import FunctionCallParser
 from sglang.srt.managers.io_struct import EmbeddingReqInput, GenerateReqInput
+from sglang.srt.models import wan2_1
 from sglang.srt.openai_api.protocol import (
     BatchRequest,
     BatchResponse,
@@ -69,7 +70,7 @@ from sglang.srt.openai_api.protocol import (
     MultimodalEmbeddingInput,
     ToolCall,
     TopLogprob,
-    UsageInfo,
+    UsageInfo, GenerationRequest,
 )
 from sglang.srt.reasoning_parser import ReasoningParser
 from sglang.utils import convert_json_schema_to_str, get_exception_traceback
@@ -477,6 +478,106 @@ async def v1_retrieve_file_content(file_id: str):
             yield from file_like
 
     return StreamingResponse(iter_file(), media_type="application/octet-stream")
+
+def v1_generate_t2v_request(
+    all_requests: List[GenerationRequest], request_ids: List[str] = None
+):
+    # 视频生成任务一次一个请求，没有一次生产连续对话
+    # if len(all_requests) > 1:
+    #     first_prompt_type = type(all_requests[0].prompt)
+    #     for request in all_requests:
+    #         assert (
+    #             type(request.prompt) is first_prompt_type
+    #         ), "All prompts must be of the same type in file input settings"
+    #         if request.n > 1:
+    #             raise ValueError(
+    #                 "Parallel sampling is not supported for completions from files"
+    #             )
+
+    prompts = []
+    sampling_params_list = []
+    return_logprobs = []
+    logprob_start_lens = []
+    top_logprobs_nums = []
+    lora_paths = []
+
+    for request in all_requests:
+        # NOTE: with openai API, the prompt's logprobs are always not computed
+        if request.echo and request.logprobs:
+            logger.warning(
+                "Echo is not compatible with logprobs. "
+                "To compute logprobs of input prompt, please use the native /generate API."
+            )
+
+        # 生成任务不需要prompt拼接模版
+        # prompt = request.prompt
+        # if is_completion_template_defined():
+        #     prompt = generate_completion_prompt_from_request(request)
+        # prompts.append(prompt)
+
+        lora_paths.append(request.lora_path)
+
+        current_logprob_start_len = -1
+        if request.echo and request.logprobs:
+            current_logprob_start_len = 0
+
+        sampling_params_list.append(
+            {
+                "temperature": request.temperature,
+                "max_new_tokens": request.max_tokens,
+                "min_new_tokens": request.min_tokens,
+                "stop": request.stop,
+                "stop_token_ids": request.stop_token_ids,
+                "top_p": request.top_p,
+                "top_k": request.top_k,
+                "min_p": request.min_p,
+                "presence_penalty": request.presence_penalty,
+                "frequency_penalty": request.frequency_penalty,
+                "repetition_penalty": request.repetition_penalty,
+                "regex": request.regex,
+                "json_schema": request.json_schema,
+                "ebnf": request.ebnf,
+                "n": request.n,
+                "no_stop_trim": request.no_stop_trim,
+                "ignore_eos": request.ignore_eos,
+                "skip_special_tokens": request.skip_special_tokens,
+            }
+        )
+        return_logprobs.append(request.logprobs is not None)
+        logprob_start_lens.append(current_logprob_start_len)
+        top_logprobs_nums.append(
+            request.logprobs if request.logprobs is not None else 0
+        )
+
+    if len(all_requests) == 1:
+        if isinstance(prompts[0], str) or isinstance(prompts[0][0], str):
+            prompt_kwargs = {"text": prompts[0]}
+        else:
+            prompt_kwargs = {"input_ids": prompts[0]}
+        sampling_params_list = sampling_params_list[0]
+        return_logprobs = return_logprobs[0]
+        logprob_start_lens = logprob_start_lens[0]
+        top_logprobs_nums = top_logprobs_nums[0]
+        lora_paths = lora_paths[0]
+    else:
+        if isinstance(prompts[0], str) or isinstance(prompts[0][0], str):
+            prompt_kwargs = {"text": prompts}
+        else:
+            prompt_kwargs = {"input_ids": prompts}
+
+    adapted_request = GenerateReqInput(
+        **prompt_kwargs,
+        sampling_params=sampling_params_list,
+        return_logprob=return_logprobs,
+        top_logprobs_num=top_logprobs_nums,
+        logprob_start_len=logprob_start_lens,
+        return_text_in_logprobs=True,
+        rid=request_ids,
+        lora_path=lora_paths,
+    )
+
+    return adapted_request, all_requests if len(all_requests) > 1 else all_requests[0]
+
 
 
 def v1_generate_request(
@@ -1306,6 +1407,35 @@ def v1_chat_generate_response(
         )
         return response
 
+async def v1_generation_t2v(tokenizer_manager, raw_request: Request):
+    request_json = await raw_request.json()
+
+    print("+++++request_json")
+    print(request_json)
+
+    all_requests = [GenerationRequest(**request_json)]
+    # created = int(time.time())
+    # adapted_request, request = v1_generate_t2v_request(all_requests)
+    #
+    #
+    # # Non-streaming response.
+    # try:
+    #     ret = await tokenizer_manager.generate_request(
+    #         adapted_request, raw_request
+    #     ).__anext__()
+    # except ValueError as e:
+    #     return create_error_response(str(e))
+    #
+    # if not isinstance(ret, list):
+    #     ret = [ret]
+    #
+    # return None
+    for all_request in all_requests:
+        wan2_1.generate(all_request)
+    return None
+
+async def v1_generation_i2v(tokenizer_manager, raw_request: Request):
+    return None
 
 async def v1_chat_completions(
     tokenizer_manager, raw_request: Request, cache_report=False

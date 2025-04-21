@@ -73,6 +73,8 @@ from sglang.srt.openai_api.adapter import (
     v1_cancel_batch,
     v1_chat_completions,
     v1_completions,
+    v1_generation_t2v,
+    v1_generation_i2v,
     v1_delete_file,
     v1_embeddings,
     v1_files_create,
@@ -568,6 +570,13 @@ async def separate_reasoning_request(obj: SeparateReasoningReqInput, request: Re
 async def openai_v1_completions(raw_request: Request):
     return await v1_completions(_global_state.tokenizer_manager, raw_request)
 
+@app.post("/v1/generate/t2v")
+async def wanx_v1_generation_t2v(raw_request: Request):
+    return await v1_generation_t2v(_global_state.tokenizer_manager, raw_request)
+
+@app.post("/v1/generate/i2v")
+async def wanx_v1_generation_i2v(raw_request: Request):
+    return await v1_generation_i2v(_global_state.tokenizer_manager, raw_request)
 
 @app.post("/v1/chat/completions")
 async def openai_v1_chat_completions(raw_request: Request):
