@@ -22,7 +22,7 @@ def set_default_torch_dtype(dtype: torch.dtype):
 def get_model_architecture(model_config: ModelConfig) -> Tuple[Type[nn.Module], str]:
     from sglang.srt.models.registry import ModelRegistry
 
-    architectures = getattr(model_config.hf_config, "architectures", [])
+    architectures = getattr(model_config.hf_config, "architectures", getattr(model_config.hf_config, "_class_name", []))
     # Special handling for quantized Mixtral.
     # FIXME(woosuk): This is a temporary hack.
     mixtral_supported = ["fp8", "compressed-tensors", "gptq_marlin", "awq_marlin"]

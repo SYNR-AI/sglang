@@ -18,6 +18,7 @@ import math
 import os
 from enum import IntEnum, auto
 from typing import List, Optional, Set, Union
+from types import SimpleNamespace
 
 import torch
 from transformers import PretrainedConfig
@@ -32,6 +33,10 @@ logger = logging.getLogger(__name__)
 class AttentionArch(IntEnum):
     MLA = auto()
     MHA = auto()
+
+dit_model_types = [
+    "t2v"
+]
 
 
 class ModelConfig:
@@ -60,6 +65,25 @@ class ModelConfig:
         if override_config_file and override_config_file.strip():
             kwargs["_configuration_file"] = override_config_file.strip()
 
+        self.config_path = os.path.join(self.model_path, "config.json")
+        if self.load_config() and self.hf_config.model_type in dit_model_types:
+            self.is_generation = True
+            self.is_multimodal = False # 开启会不管是否跳过Tokenizer都会另外启动一个用于图像处理的Tokenizer
+            self.is_multimodal_gen = True
+            self.is_image_gen = True
+            self.is_audio_model = False
+
+            self.attention_arch = None # 这里会是是否启用self.use_mla_backend的一个因素
+            self.attention_chunk_size = None
+
+            self.dtype = _get_and_verify_dtype(self.hf_config, dtype) # 需要指定默认的精度FP16
+
+            self.context_len = context_length
+            self.image_token_id = None
+
+            # Verify quantization
+            self._verify_quantization()
+            return
         self.hf_config = get_config(
             self.model_path,
             trust_remote_code=trust_remote_code,
@@ -302,8 +326,10 @@ class ModelConfig:
         if self.quantization is not None:
             self.quantization = self.quantization.lower()
 
-        # Parse quantization method from the HF model config, if available.
-        quant_cfg = self._parse_quant_hf_config()
+        quant_cfg = None
+        if hasattr(self, "hf_config") and self.hf_config:
+            # Parse quantization method from the HF model config, if available.
+            quant_cfg = self._parse_quant_hf_config()
 
         if quant_cfg is not None:
             quant_method = quant_cfg.get("quant_method", "").lower()
@@ -382,6 +408,20 @@ class ModelConfig:
                 client.pull_files(allow_pattern=["*config.json"])
                 self.model_weights = self.model_path
                 self.model_path = client.get_local_dir()
+
+    def load_config(self):
+        """加载 config.json 文件到类属性"""
+        if not os.path.exists(self.config_path):
+            logger.info(f"配置文件不存在: {self.config_path}, 忽略模型本地配置加载")
+            return False
+
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+
+        self.hf_config = SimpleNamespace(**config)
+
+        logger.info(f"配置详情: {self.hf_config}")
+        return True
 
 
 def get_hf_text_config(config: PretrainedConfig):

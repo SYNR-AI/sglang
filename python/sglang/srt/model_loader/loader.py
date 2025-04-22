@@ -1399,6 +1399,10 @@ class RemoteModelLoader(BaseModelLoader):
         logger.info("Loaded weights from remote storage in %.2f seconds.", end - start)
         return model.eval()
 
+class WANXModelLoader(BaseModelLoader):
+    def __init__(self, load_config: LoadConfig):
+        super().__init__(load_config)
+
 
 def get_model_loader(load_config: LoadConfig) -> BaseModelLoader:
     """Get a model loader based on the load format."""
@@ -1423,5 +1427,8 @@ def get_model_loader(load_config: LoadConfig) -> BaseModelLoader:
 
     if load_config.load_format == LoadFormat.REMOTE:
         return RemoteModelLoader(load_config)
+
+    if load_config.load_format == LoadFormat.WANX:
+        return WANXModelLoader(load_config)
 
     return DefaultModelLoader(load_config)

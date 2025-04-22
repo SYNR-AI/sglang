@@ -40,7 +40,7 @@ from sglang.srt.conversation import (
 )
 from sglang.srt.function_call_parser import FunctionCallParser
 from sglang.srt.managers.io_struct import EmbeddingReqInput, GenerateReqInput
-from sglang.srt.models import wan2_1
+from sglang.srt.models import wan2_1_inf
 from sglang.srt.openai_api.protocol import (
     BatchRequest,
     BatchResponse,

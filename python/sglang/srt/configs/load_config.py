@@ -23,6 +23,7 @@ class LoadFormat(str, enum.Enum):
     LAYERED = "layered"
     JAX = "jax"
     REMOTE = "remote"
+    WANX = "wanx"
 
 
 @dataclass

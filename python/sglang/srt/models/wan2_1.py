@@ -1,410 +1,622 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
-import argparse
-from datetime import datetime
-import logging
-import os
-import sys
-import warnings
+import math
 
-warnings.filterwarnings('ignore')
+import torch
+from torch.amp import autocast
+import torch.nn as nn
+from diffusers.configuration_utils import ConfigMixin, register_to_config
+from diffusers.models.modeling_utils import ModelMixin
 
-import torch, random
-import torch.distributed as dist
-from PIL import Image
+from sglang.srt.layers.attention.flashattention import flash_attention
 
-import sglang.srt.models.wan as wan
-from sglang.srt.models.wan.configs import WAN_CONFIGS, SIZE_CONFIGS, MAX_AREA_CONFIGS, SUPPORTED_SIZES
-from sglang.srt.models.wan.utils.prompt_extend import DashScopePromptExpander, QwenPromptExpander
-from sglang.srt.models.wan.utils.utils import cache_video, cache_image, str2bool
+__all__ = ['WanModel']
 
-EXAMPLE_PROMPT = {
-    "t2v-1.3B": {
-        "prompt": "Two anthropomorphic cats in comfy boxing gear and bright gloves fight intensely on a spotlighted stage.",
-    },
-    "t2v-14B": {
-        "prompt": "Two anthropomorphic cats in comfy boxing gear and bright gloves fight intensely on a spotlighted stage.",
-    },
-    "t2i-14B": {
-        "prompt": "一个朴素端庄的美人",
-    },
-    "i2v-14B": {
-        "prompt":
-            "Summer beach vacation style, a white cat wearing sunglasses sits on a surfboard. The fluffy-furred feline gazes directly at the camera with a relaxed expression. Blurred beach scenery forms the background featuring crystal-clear waters, distant green hills, and a blue sky dotted with white clouds. The cat assumes a naturally relaxed posture, as if savoring the sea breeze and warm sunlight. A close-up shot highlights the feline's intricate details and the refreshing atmosphere of the seaside.",
-        "image":
-            "examples/i2v_input.JPG",
-    },
+
+def sinusoidal_embedding_1d(dim, position):
+    # preprocess
+    assert dim % 2 == 0
+    half = dim // 2
+    position = position.type(torch.float64)
+
+    # calculation
+    sinusoid = torch.outer(
+        position, torch.pow(10000, -torch.arange(half).to(position).div(half)))
+    x = torch.cat([torch.cos(sinusoid), torch.sin(sinusoid)], dim=1)
+    return x
+
+
+@autocast("cuda", enabled=False)
+def rope_params(max_seq_len, dim, theta=10000):
+    assert dim % 2 == 0
+    freqs = torch.outer(
+        torch.arange(max_seq_len),
+        1.0 / torch.pow(theta,
+                        torch.arange(0, dim, 2).to(torch.float64).div(dim)))
+    freqs = torch.polar(torch.ones_like(freqs), freqs)
+    return freqs
+
+
+@autocast("cuda", enabled=False)
+def rope_apply(x, grid_sizes, freqs):
+    n, c = x.size(2), x.size(3) // 2
+
+    # split freqs
+    freqs = freqs.split([c - 2 * (c // 3), c // 3, c // 3], dim=1)
+
+    # loop over samples
+    output = []
+    for i, (f, h, w) in enumerate(grid_sizes.tolist()):
+        seq_len = f * h * w
+
+        # precompute multipliers
+        x_i = torch.view_as_complex(x[i, :seq_len].to(torch.float64).reshape(
+            seq_len, n, -1, 2))
+        freqs_i = torch.cat([
+            freqs[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
+            freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
+            freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1)
+        ],
+                            dim=-1).reshape(seq_len, 1, -1)
+
+        # apply rotary embedding
+        x_i = torch.view_as_real(x_i * freqs_i).flatten(2)
+        x_i = torch.cat([x_i, x[i, seq_len:]])
+
+        # append to collection
+        output.append(x_i)
+    return torch.stack(output).float()
+
+
+class WanRMSNorm(nn.Module):
+
+    def __init__(self, dim, eps=1e-5):
+        super().__init__()
+        self.dim = dim
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x):
+        r"""
+        Args:
+            x(Tensor): Shape [B, L, C]
+        """
+        return self._norm(x.float()).type_as(x) * self.weight
+
+    def _norm(self, x):
+        return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+
+
+class WanLayerNorm(nn.LayerNorm):
+
+    def __init__(self, dim, eps=1e-6, elementwise_affine=False):
+        super().__init__(dim, elementwise_affine=elementwise_affine, eps=eps)
+
+    def forward(self, x):
+        r"""
+        Args:
+            x(Tensor): Shape [B, L, C]
+        """
+        return super().forward(x.float()).type_as(x)
+
+
+class WanSelfAttention(nn.Module):
+
+    def __init__(self,
+                 dim,
+                 num_heads,
+                 window_size=(-1, -1),
+                 qk_norm=True,
+                 eps=1e-6):
+        assert dim % num_heads == 0
+        super().__init__()
+        self.dim = dim
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.window_size = window_size
+        self.qk_norm = qk_norm
+        self.eps = eps
+
+        # layers
+        self.q = nn.Linear(dim, dim)
+        self.k = nn.Linear(dim, dim)
+        self.v = nn.Linear(dim, dim)
+        self.o = nn.Linear(dim, dim)
+        self.norm_q = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
+        self.norm_k = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
+
+    def forward(self, x, seq_lens, grid_sizes, freqs):
+        r"""
+        Args:
+            x(Tensor): Shape [B, L, num_heads, C / num_heads]
+            seq_lens(Tensor): Shape [B]
+            grid_sizes(Tensor): Shape [B, 3], the second dimension contains (F, H, W)
+            freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
+        """
+        b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
+
+        # query, key, value function
+        def qkv_fn(x):
+            q = self.norm_q(self.q(x)).view(b, s, n, d)
+            k = self.norm_k(self.k(x)).view(b, s, n, d)
+            v = self.v(x).view(b, s, n, d)
+            return q, k, v
+
+        q, k, v = qkv_fn(x)
+
+        x = flash_attention(
+            q=rope_apply(q, grid_sizes, freqs),
+            k=rope_apply(k, grid_sizes, freqs),
+            v=v,
+            k_lens=seq_lens,
+            window_size=self.window_size)
+
+        # output
+        x = x.flatten(2)
+        x = self.o(x)
+        return x
+
+
+class WanT2VCrossAttention(WanSelfAttention):
+
+    def forward(self, x, context, context_lens):
+        r"""
+        Args:
+            x(Tensor): Shape [B, L1, C]
+            context(Tensor): Shape [B, L2, C]
+            context_lens(Tensor): Shape [B]
+        """
+        b, n, d = x.size(0), self.num_heads, self.head_dim
+
+        # compute query, key, value
+        q = self.norm_q(self.q(x)).view(b, -1, n, d)
+        k = self.norm_k(self.k(context)).view(b, -1, n, d)
+        v = self.v(context).view(b, -1, n, d)
+
+        # compute attention
+        x = flash_attention(q, k, v, k_lens=context_lens)
+
+        # output
+        x = x.flatten(2)
+        x = self.o(x)
+        return x
+
+
+class WanI2VCrossAttention(WanSelfAttention):
+
+    def __init__(self,
+                 dim,
+                 num_heads,
+                 window_size=(-1, -1),
+                 qk_norm=True,
+                 eps=1e-6):
+        super().__init__(dim, num_heads, window_size, qk_norm, eps)
+
+        self.k_img = nn.Linear(dim, dim)
+        self.v_img = nn.Linear(dim, dim)
+        # self.alpha = nn.Parameter(torch.zeros((1, )))
+        self.norm_k_img = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
+
+    def forward(self, x, context, context_lens):
+        r"""
+        Args:
+            x(Tensor): Shape [B, L1, C]
+            context(Tensor): Shape [B, L2, C]
+            context_lens(Tensor): Shape [B]
+        """
+        context_img = context[:, :257]
+        context = context[:, 257:]
+        b, n, d = x.size(0), self.num_heads, self.head_dim
+
+        # compute query, key, value
+        q = self.norm_q(self.q(x)).view(b, -1, n, d)
+        k = self.norm_k(self.k(context)).view(b, -1, n, d)
+        v = self.v(context).view(b, -1, n, d)
+        k_img = self.norm_k_img(self.k_img(context_img)).view(b, -1, n, d)
+        v_img = self.v_img(context_img).view(b, -1, n, d)
+        img_x = flash_attention(q, k_img, v_img, k_lens=None)
+        # compute attention
+        x = flash_attention(q, k, v, k_lens=context_lens)
+
+        # output
+        x = x.flatten(2)
+        img_x = img_x.flatten(2)
+        x = x + img_x
+        x = self.o(x)
+        return x
+
+
+WAN_CROSSATTENTION_CLASSES = {
+    't2v_cross_attn': WanT2VCrossAttention,
+    'i2v_cross_attn': WanI2VCrossAttention,
 }
 
 
-def _validate_args(args):
-    # Basic check
-    assert args.ckpt_dir is not None, "Please specify the checkpoint directory."
-    assert args.task in WAN_CONFIGS, f"Unsupport task: {args.task}"
-    assert args.task in EXAMPLE_PROMPT, f"Unsupport task: {args.task}"
+class WanAttentionBlock(nn.Module):
 
-    # The default sampling steps are 40 for image-to-video tasks and 50 for text-to-video tasks.
-    if args.sample_steps is None:
-        args.sample_steps = 40 if "i2v" in args.task else 50
+    def __init__(self,
+                 cross_attn_type,
+                 dim,
+                 ffn_dim,
+                 num_heads,
+                 window_size=(-1, -1),
+                 qk_norm=True,
+                 cross_attn_norm=False,
+                 eps=1e-6):
+        super().__init__()
+        self.dim = dim
+        self.ffn_dim = ffn_dim
+        self.num_heads = num_heads
+        self.window_size = window_size
+        self.qk_norm = qk_norm
+        self.cross_attn_norm = cross_attn_norm
+        self.eps = eps
 
-    if args.sample_shift is None:
-        args.sample_shift = 5.0
-        if "i2v" in args.task and args.size in ["832*480", "480*832"]:
-            args.sample_shift = 3.0
+        # layers
+        self.norm1 = WanLayerNorm(dim, eps)
+        self.self_attn = WanSelfAttention(dim, num_heads, window_size, qk_norm,
+                                          eps)
+        self.norm3 = WanLayerNorm(
+            dim, eps,
+            elementwise_affine=True) if cross_attn_norm else nn.Identity()
+        self.cross_attn = WAN_CROSSATTENTION_CLASSES[cross_attn_type](dim,
+                                                                      num_heads,
+                                                                      (-1, -1),
+                                                                      qk_norm,
+                                                                      eps)
+        self.norm2 = WanLayerNorm(dim, eps)
+        self.ffn = nn.Sequential(
+            nn.Linear(dim, ffn_dim), nn.GELU(approximate='tanh'),
+            nn.Linear(ffn_dim, dim))
 
-    # The default number of frames are 1 for text-to-image tasks and 81 for other tasks.
-    if args.frame_num is None:
-        args.frame_num = 1 if "t2i" in args.task else 81
+        # modulation
+        self.modulation = nn.Parameter(torch.randn(1, 6, dim) / dim**0.5)
 
-    # T2I frame_num check
-    if "t2i" in args.task:
-        assert args.frame_num == 1, f"Unsupport frame_num {args.frame_num} for task {args.task}"
+    def forward(
+        self,
+        x,
+        e,
+        seq_lens,
+        grid_sizes,
+        freqs,
+        context,
+        context_lens,
+    ):
+        r"""
+        Args:
+            x(Tensor): Shape [B, L, C]
+            e(Tensor): Shape [B, 6, C]
+            seq_lens(Tensor): Shape [B], length of each sequence in batch
+            grid_sizes(Tensor): Shape [B, 3], the second dimension contains (F, H, W)
+            freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
+        """
+        assert e.dtype == torch.float32
+        with amp.autocast(dtype=torch.float32):
+            e = (self.modulation + e).chunk(6, dim=1)
+        assert e[0].dtype == torch.float32
 
-    args.base_seed = args.base_seed if args.base_seed >= 0 else random.randint(
-        0, sys.maxsize)
-    # Size check
-    assert args.size in SUPPORTED_SIZES[
-        args.
-        task], f"Unsupport size {args.size} for task {args.task}, supported sizes are: {', '.join(SUPPORTED_SIZES[args.task])}"
+        # self-attention
+        y = self.self_attn(
+            self.norm1(x).float() * (1 + e[1]) + e[0], seq_lens, grid_sizes,
+            freqs)
+        with amp.autocast(dtype=torch.float32):
+            x = x + y * e[2]
 
-def _parse_args():
-    parser = argparse.ArgumentParser(
-        description="Generate a image or video from a text prompt or image using Wan"
-    )
-    parser.add_argument(
-        "--task",
-        type=str,
-        default="t2v-14B",
-        choices=list(WAN_CONFIGS.keys()),
-        help="The task to run.")
-    parser.add_argument(
-        "--size",
-        type=str,
-        default="1280*720",
-        choices=list(SIZE_CONFIGS.keys()),
-        help="The area (width*height) of the generated video. For the I2V task, the aspect ratio of the output video will follow that of the input image."
-    )
-    parser.add_argument(
-        "--frame_num",
-        type=int,
-        default=None,
-        help="How many frames to sample from a image or video. The number should be 4n+1"
-    )
-    parser.add_argument(
-        "--ckpt_dir",
-        type=str,
-        default=None,
-        help="The path to the checkpoint directory.")
-    parser.add_argument(
-        "--offload_model",
-        type=str2bool,
-        default=None,
-        help="Whether to offload the model to CPU after each model forward, reducing GPU memory usage."
-    )
-    parser.add_argument(
-        "--ulysses_size",
-        type=int,
-        default=1,
-        help="The size of the ulysses parallelism in DiT.")
-    parser.add_argument(
-        "--ring_size",
-        type=int,
-        default=1,
-        help="The size of the ring attention parallelism in DiT.")
-    parser.add_argument(
-        "--t5_fsdp",
-        action="store_true",
-        default=False,
-        help="Whether to use FSDP for T5.")
-    parser.add_argument(
-        "--t5_cpu",
-        action="store_true",
-        default=False,
-        help="Whether to place T5 model on CPU.")
-    parser.add_argument(
-        "--dit_fsdp",
-        action="store_true",
-        default=False,
-        help="Whether to use FSDP for DiT.")
-    parser.add_argument(
-        "--save_file",
-        type=str,
-        default=None,
-        help="The file to save the generated image or video to.")
-    parser.add_argument(
-        "--prompt",
-        type=str,
-        default=None,
-        help="The prompt to generate the image or video from.")
-    parser.add_argument(
-        "--use_prompt_extend",
-        action="store_true",
-        default=False,
-        help="Whether to use prompt extend.")
-    parser.add_argument(
-        "--prompt_extend_method",
-        type=str,
-        default="local_qwen",
-        choices=["dashscope", "local_qwen"],
-        help="The prompt extend method to use.")
-    parser.add_argument(
-        "--prompt_extend_model",
-        type=str,
-        default=None,
-        help="The prompt extend model to use.")
-    parser.add_argument(
-        "--prompt_extend_target_lang",
-        type=str,
-        default="zh",
-        choices=["zh", "en"],
-        help="The target language of prompt extend.")
-    parser.add_argument(
-        "--base_seed",
-        type=int,
-        default=-1,
-        help="The seed to use for generating the image or video.")
-    parser.add_argument(
-        "--image",
-        type=str,
-        default=None,
-        help="The image to generate the video from.")
-    parser.add_argument(
-        "--sample_solver",
-        type=str,
-        default='unipc',
-        choices=['unipc', 'dpm++'],
-        help="The solver used to sample.")
-    parser.add_argument(
-        "--sample_steps", type=int, default=None, help="The sampling steps.")
-    parser.add_argument(
-        "--sample_shift",
-        type=float,
-        default=None,
-        help="Sampling shift factor for flow matching schedulers.")
-    parser.add_argument(
-        "--sample_guide_scale",
-        type=float,
-        default=5.0,
-        help="Classifier free guidance scale.")
+        # cross-attention & ffn function
+        def cross_attn_ffn(x, context, context_lens, e):
+            x = x + self.cross_attn(self.norm3(x), context, context_lens)
+            y = self.ffn(self.norm2(x).float() * (1 + e[4]) + e[3])
+            with amp.autocast(dtype=torch.float32):
+                x = x + y * e[5]
+            return x
 
-    args = parser.parse_args()
-
-    _validate_args(args)
-
-    return args
+        x = cross_attn_ffn(x, context, context_lens, e)
+        return x
 
 
-def _init_logging(rank):
-    # logging
-    if rank == 0:
-        # set format
-        logging.basicConfig(
-            level=logging.INFO,
-            format="[%(asctime)s] %(levelname)s: %(message)s",
-            handlers=[logging.StreamHandler(stream=sys.stdout)])
-    else:
-        logging.basicConfig(level=logging.ERROR)
+class Head(nn.Module):
+
+    def __init__(self, dim, out_dim, patch_size, eps=1e-6):
+        super().__init__()
+        self.dim = dim
+        self.out_dim = out_dim
+        self.patch_size = patch_size
+        self.eps = eps
+
+        # layers
+        out_dim = math.prod(patch_size) * out_dim
+        self.norm = WanLayerNorm(dim, eps)
+        self.head = nn.Linear(dim, out_dim)
+
+        # modulation
+        self.modulation = nn.Parameter(torch.randn(1, 2, dim) / dim**0.5)
+
+    def forward(self, x, e):
+        r"""
+        Args:
+            x(Tensor): Shape [B, L1, C]
+            e(Tensor): Shape [B, C]
+        """
+        assert e.dtype == torch.float32
+        with amp.autocast(dtype=torch.float32):
+            e = (self.modulation + e.unsqueeze(1)).chunk(2, dim=1)
+            x = (self.head(self.norm(x) * (1 + e[1]) + e[0]))
+        return x
 
 
-def generate(args):
-    rank = int(os.getenv("RANK", 0))
-    world_size = int(os.getenv("WORLD_SIZE", 1))
-    local_rank = int(os.getenv("LOCAL_RANK", 0))
-    device = local_rank
-    _init_logging(rank)
+class MLPProj(torch.nn.Module):
 
-    if args.offload_model is None:
-        args.offload_model = False if world_size > 1 else True
-        logging.info(
-            f"offload_model is not specified, set to {args.offload_model}.")
-    if world_size > 1:
-        torch.cuda.set_device(local_rank)
-        dist.init_process_group(
-            backend="nccl",
-            init_method="env://",
-            rank=rank,
-            world_size=world_size)
-    else:
-        assert not (
-            args.t5_fsdp or args.dit_fsdp
-        ), f"t5_fsdp and dit_fsdp are not supported in non-distributed environments."
-        assert not (
-            args.ulysses_size > 1 or args.ring_size > 1
-        ), f"context parallel are not supported in non-distributed environments."
+    def __init__(self, in_dim, out_dim):
+        super().__init__()
 
-    if args.ulysses_size > 1 or args.ring_size > 1:
-        assert args.ulysses_size * args.ring_size == world_size, f"The number of ulysses_size and ring_size should be equal to the world size."
-        from xfuser.core.distributed import (initialize_model_parallel,
-                                             init_distributed_environment)
-        init_distributed_environment(
-            rank=dist.get_rank(), world_size=dist.get_world_size())
+        self.proj = torch.nn.Sequential(
+            torch.nn.LayerNorm(in_dim), torch.nn.Linear(in_dim, in_dim),
+            torch.nn.GELU(), torch.nn.Linear(in_dim, out_dim),
+            torch.nn.LayerNorm(out_dim))
 
-        initialize_model_parallel(
-            sequence_parallel_degree=dist.get_world_size(),
-            ring_degree=args.ring_size,
-            ulysses_degree=args.ulysses_size,
-        )
-
-    if args.use_prompt_extend:
-        if args.prompt_extend_method == "dashscope":
-            prompt_expander = DashScopePromptExpander(
-                model_name=args.prompt_extend_model, is_vl="i2v" in args.task)
-        elif args.prompt_extend_method == "local_qwen":
-            prompt_expander = QwenPromptExpander(
-                model_name=args.prompt_extend_model,
-                is_vl="i2v" in args.task,
-                device=rank)
-        else:
-            raise NotImplementedError(
-                f"Unsupport prompt_extend_method: {args.prompt_extend_method}")
-
-    cfg = WAN_CONFIGS[args.task]
-    if args.ulysses_size > 1:
-        assert cfg.num_heads % args.ulysses_size == 0, f"`{cfg.num_heads=}` cannot be divided evenly by `{args.ulysses_size=}`."
-
-    logging.info(f"Generation job args: {args}")
-    logging.info(f"Generation model config: {cfg}")
-
-    if dist.is_initialized():
-        base_seed = [args.base_seed] if rank == 0 else [None]
-        dist.broadcast_object_list(base_seed, src=0)
-        args.base_seed = base_seed[0]
-
-    if "t2v" in args.task or "t2i" in args.task:
-        if args.prompt is None:
-            args.prompt = EXAMPLE_PROMPT[args.task]["prompt"]
-        logging.info(f"Input prompt: {args.prompt}")
-        if args.use_prompt_extend:
-            logging.info("Extending prompt ...")
-            if rank == 0:
-                prompt_output = prompt_expander(
-                    args.prompt,
-                    tar_lang=args.prompt_extend_target_lang,
-                    seed=args.base_seed)
-                if prompt_output.status == False:
-                    logging.info(
-                        f"Extending prompt failed: {prompt_output.message}")
-                    logging.info("Falling back to original prompt.")
-                    input_prompt = args.prompt
-                else:
-                    input_prompt = prompt_output.prompt
-                input_prompt = [input_prompt]
-            else:
-                input_prompt = [None]
-            if dist.is_initialized():
-                dist.broadcast_object_list(input_prompt, src=0)
-            args.prompt = input_prompt[0]
-            logging.info(f"Extended prompt: {args.prompt}")
-
-        logging.info("Creating WanT2V pipeline.")
-        wan_t2v = wan.WanT2V(
-            config=cfg,
-            checkpoint_dir=args.ckpt_dir,
-            device_id=device,
-            rank=rank,
-            t5_fsdp=args.t5_fsdp,
-            dit_fsdp=args.dit_fsdp,
-            use_usp=(args.ulysses_size > 1 or args.ring_size > 1),
-            t5_cpu=args.t5_cpu,
-        )
-
-        logging.info(
-            f"Generating {'image' if 't2i' in args.task else 'video'} ...")
-        video = wan_t2v.generate(
-            args.prompt,
-            size=SIZE_CONFIGS[args.size],
-            frame_num=args.frame_num,
-            shift=args.sample_shift,
-            sample_solver=args.sample_solver,
-            sampling_steps=args.sample_steps,
-            guide_scale=args.sample_guide_scale,
-            seed=args.base_seed,
-            offload_model=args.offload_model)
-
-    else:
-        if args.prompt is None:
-            args.prompt = EXAMPLE_PROMPT[args.task]["prompt"]
-        if args.image is None:
-            args.image = EXAMPLE_PROMPT[args.task]["image"]
-        logging.info(f"Input prompt: {args.prompt}")
-        logging.info(f"Input image: {args.image}")
-
-        img = Image.open(args.image).convert("RGB")
-        if args.use_prompt_extend:
-            logging.info("Extending prompt ...")
-            if rank == 0:
-                prompt_output = prompt_expander(
-                    args.prompt,
-                    tar_lang=args.prompt_extend_target_lang,
-                    image=img,
-                    seed=args.base_seed)
-                if prompt_output.status == False:
-                    logging.info(
-                        f"Extending prompt failed: {prompt_output.message}")
-                    logging.info("Falling back to original prompt.")
-                    input_prompt = args.prompt
-                else:
-                    input_prompt = prompt_output.prompt
-                input_prompt = [input_prompt]
-            else:
-                input_prompt = [None]
-            if dist.is_initialized():
-                dist.broadcast_object_list(input_prompt, src=0)
-            args.prompt = input_prompt[0]
-            logging.info(f"Extended prompt: {args.prompt}")
-
-        logging.info("Creating WanI2V pipeline.")
-        wan_i2v = wan.WanI2V(
-            config=cfg,
-            checkpoint_dir=args.ckpt_dir,
-            device_id=device,
-            rank=rank,
-            t5_fsdp=args.t5_fsdp,
-            dit_fsdp=args.dit_fsdp,
-            use_usp=(args.ulysses_size > 1 or args.ring_size > 1),
-            t5_cpu=args.t5_cpu,
-        )
-
-        logging.info("Generating video ...")
-        video = wan_i2v.generate(
-            args.prompt,
-            img,
-            max_area=MAX_AREA_CONFIGS[args.size],
-            frame_num=args.frame_num,
-            shift=args.sample_shift,
-            sample_solver=args.sample_solver,
-            sampling_steps=args.sample_steps,
-            guide_scale=args.sample_guide_scale,
-            seed=args.base_seed,
-            offload_model=args.offload_model)
-
-    if rank == 0:
-        if args.save_file is None:
-            formatted_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-            formatted_prompt = args.prompt.replace(" ", "_").replace("/",
-                                                                     "_")[:50]
-            suffix = '.png' if "t2i" in args.task else '.mp4'
-            args.save_file = f"{args.task}_{args.size.replace('*','x') if sys.platform=='win32' else args.size}_{args.ulysses_size}_{args.ring_size}_{formatted_prompt}_{formatted_time}" + suffix
-
-        if "t2i" in args.task:
-            logging.info(f"Saving generated image to {args.save_file}")
-            cache_image(
-                tensor=video.squeeze(1)[None],
-                save_file=args.save_file,
-                nrow=1,
-                normalize=True,
-                value_range=(-1, 1))
-        else:
-            logging.info(f"Saving generated video to {args.save_file}")
-            cache_video(
-                tensor=video[None],
-                save_file=args.save_file,
-                fps=cfg.sample_fps,
-                nrow=1,
-                normalize=True,
-                value_range=(-1, 1))
-    logging.info("Finished.")
+    def forward(self, image_embeds):
+        clip_extra_context_tokens = self.proj(image_embeds)
+        return clip_extra_context_tokens
 
 
-if __name__ == "__main__":
-    args = _parse_args()
-    generate(args)
+class WanModel(ModelMixin, ConfigMixin):
+    r"""
+    Wan diffusion backbone supporting both text-to-video and image-to-video.
+    """
+
+    ignore_for_config = [
+        'patch_size', 'cross_attn_norm', 'qk_norm', 'text_dim', 'window_size'
+    ]
+    _no_split_modules = ['WanAttentionBlock']
+
+    @register_to_config
+    def __init__(self,
+                 model_type='t2v',
+                 patch_size=(1, 2, 2),
+                 text_len=512,
+                 in_dim=16,
+                 dim=2048,
+                 ffn_dim=8192,
+                 freq_dim=256,
+                 text_dim=4096,
+                 out_dim=16,
+                 num_heads=16,
+                 num_layers=32,
+                 window_size=(-1, -1),
+                 qk_norm=True,
+                 cross_attn_norm=True,
+                 eps=1e-6):
+        r"""
+        Initialize the diffusion model backbone.
+
+        Args:
+            model_type (`str`, *optional*, defaults to 't2v'):
+                Model variant - 't2v' (text-to-video) or 'i2v' (image-to-video)
+            patch_size (`tuple`, *optional*, defaults to (1, 2, 2)):
+                3D patch dimensions for video embedding (t_patch, h_patch, w_patch)
+            text_len (`int`, *optional*, defaults to 512):
+                Fixed length for text embeddings
+            in_dim (`int`, *optional*, defaults to 16):
+                Input video channels (C_in)
+            dim (`int`, *optional*, defaults to 2048):
+                Hidden dimension of the transformer
+            ffn_dim (`int`, *optional*, defaults to 8192):
+                Intermediate dimension in feed-forward network
+            freq_dim (`int`, *optional*, defaults to 256):
+                Dimension for sinusoidal time embeddings
+            text_dim (`int`, *optional*, defaults to 4096):
+                Input dimension for text embeddings
+            out_dim (`int`, *optional*, defaults to 16):
+                Output video channels (C_out)
+            num_heads (`int`, *optional*, defaults to 16):
+                Number of attention heads
+            num_layers (`int`, *optional*, defaults to 32):
+                Number of transformer blocks
+            window_size (`tuple`, *optional*, defaults to (-1, -1)):
+                Window size for local attention (-1 indicates global attention)
+            qk_norm (`bool`, *optional*, defaults to True):
+                Enable query/key normalization
+            cross_attn_norm (`bool`, *optional*, defaults to False):
+                Enable cross-attention normalization
+            eps (`float`, *optional*, defaults to 1e-6):
+                Epsilon value for normalization layers
+        """
+
+        super().__init__()
+
+        assert model_type in ['t2v', 'i2v']
+        self.model_type = model_type
+
+        self.patch_size = patch_size
+        self.text_len = text_len
+        self.in_dim = in_dim
+        self.dim = dim
+        self.ffn_dim = ffn_dim
+        self.freq_dim = freq_dim
+        self.text_dim = text_dim
+        self.out_dim = out_dim
+        self.num_heads = num_heads
+        self.num_layers = num_layers
+        self.window_size = window_size
+        self.qk_norm = qk_norm
+        self.cross_attn_norm = cross_attn_norm
+        self.eps = eps
+
+        # embeddings
+        self.patch_embedding = nn.Conv3d(
+            in_dim, dim, kernel_size=patch_size, stride=patch_size)
+        self.text_embedding = nn.Sequential(
+            nn.Linear(text_dim, dim), nn.GELU(approximate='tanh'),
+            nn.Linear(dim, dim))
+
+        self.time_embedding = nn.Sequential(
+            nn.Linear(freq_dim, dim), nn.SiLU(), nn.Linear(dim, dim))
+        self.time_projection = nn.Sequential(nn.SiLU(), nn.Linear(dim, dim * 6))
+
+        # blocks
+        cross_attn_type = 't2v_cross_attn' if model_type == 't2v' else 'i2v_cross_attn'
+        self.blocks = nn.ModuleList([
+            WanAttentionBlock(cross_attn_type, dim, ffn_dim, num_heads,
+                              window_size, qk_norm, cross_attn_norm, eps)
+            for _ in range(num_layers)
+        ])
+
+        # head
+        self.head = Head(dim, out_dim, patch_size, eps)
+
+        # buffers (don't use register_buffer otherwise dtype will be changed in to())
+        assert (dim % num_heads) == 0 and (dim // num_heads) % 2 == 0
+        d = dim // num_heads
+        self.freqs = torch.cat([
+            rope_params(1024, d - 4 * (d // 6)),
+            rope_params(1024, 2 * (d // 6)),
+            rope_params(1024, 2 * (d // 6))
+        ],
+                               dim=1)
+
+        if model_type == 'i2v':
+            self.img_emb = MLPProj(1280, dim)
+
+        # initialize weights
+        self.init_weights()
+
+    def forward(
+        self,
+        x,
+        t,
+        context,
+        seq_len,
+        clip_fea=None,
+        y=None,
+    ):
+        r"""
+        Forward pass through the diffusion model
+
+        Args:
+            x (List[Tensor]):
+                List of input video tensors, each with shape [C_in, F, H, W]
+            t (Tensor):
+                Diffusion timesteps tensor of shape [B]
+            context (List[Tensor]):
+                List of text embeddings each with shape [L, C]
+            seq_len (`int`):
+                Maximum sequence length for positional encoding
+            clip_fea (Tensor, *optional*):
+                CLIP image features for image-to-video mode
+            y (List[Tensor], *optional*):
+                Conditional video inputs for image-to-video mode, same shape as x
+
+        Returns:
+            List[Tensor]:
+                List of denoised video tensors with original input shapes [C_out, F, H / 8, W / 8]
+        """
+        if self.model_type == 'i2v':
+            assert clip_fea is not None and y is not None
+        # params
+        device = self.patch_embedding.weight.device
+        if self.freqs.device != device:
+            self.freqs = self.freqs.to(device)
+
+        if y is not None:
+            x = [torch.cat([u, v], dim=0) for u, v in zip(x, y)]
+
+        # embeddings
+        x = [self.patch_embedding(u.unsqueeze(0)) for u in x]
+        grid_sizes = torch.stack(
+            [torch.tensor(u.shape[2:], dtype=torch.long) for u in x])
+        x = [u.flatten(2).transpose(1, 2) for u in x]
+        seq_lens = torch.tensor([u.size(1) for u in x], dtype=torch.long)
+        assert seq_lens.max() <= seq_len
+        x = torch.cat([
+            torch.cat([u, u.new_zeros(1, seq_len - u.size(1), u.size(2))],
+                      dim=1) for u in x
+        ])
+
+        # time embeddings
+        with amp.autocast(dtype=torch.float32):
+            e = self.time_embedding(
+                sinusoidal_embedding_1d(self.freq_dim, t).float())
+            e0 = self.time_projection(e).unflatten(1, (6, self.dim))
+            assert e.dtype == torch.float32 and e0.dtype == torch.float32
+
+        # context
+        context_lens = None
+        context = self.text_embedding(
+            torch.stack([
+                torch.cat(
+                    [u, u.new_zeros(self.text_len - u.size(0), u.size(1))])
+                for u in context
+            ]))
+
+        if clip_fea is not None:
+            context_clip = self.img_emb(clip_fea)  # bs x 257 x dim
+            context = torch.concat([context_clip, context], dim=1)
+
+        # arguments
+        kwargs = dict(
+            e=e0,
+            seq_lens=seq_lens,
+            grid_sizes=grid_sizes,
+            freqs=self.freqs,
+            context=context,
+            context_lens=context_lens)
+
+        for block in self.blocks:
+            x = block(x, **kwargs)
+
+        # head
+        x = self.head(x, e)
+
+        # unpatchify
+        x = self.unpatchify(x, grid_sizes)
+        return [u.float() for u in x]
+
+    def unpatchify(self, x, grid_sizes):
+        r"""
+        Reconstruct video tensors from patch embeddings.
+
+        Args:
+            x (List[Tensor]):
+                List of patchified features, each with shape [L, C_out * prod(patch_size)]
+            grid_sizes (Tensor):
+                Original spatial-temporal grid dimensions before patching,
+                    shape [B, 3] (3 dimensions correspond to F_patches, H_patches, W_patches)
+
+        Returns:
+            List[Tensor]:
+                Reconstructed video tensors with shape [C_out, F, H / 8, W / 8]
+        """
+
+        c = self.out_dim
+        out = []
+        for u, v in zip(x, grid_sizes.tolist()):
+            u = u[:math.prod(v)].view(*v, *self.patch_size, c)
+            u = torch.einsum('fhwpqrc->cfphqwr', u)
+            u = u.reshape(c, *[i * j for i, j in zip(v, self.patch_size)])
+            out.append(u)
+        return out
+
+    def init_weights(self):
+        r"""
+        Initialize model parameters using Xavier initialization.
+        """
+
+        # basic init
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+        # init embeddings
+        nn.init.xavier_uniform_(self.patch_embedding.weight.flatten(1))
+        for m in self.text_embedding.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, std=.02)
+        for m in self.time_embedding.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, std=.02)
+
+        # init output layer
+        nn.init.zeros_(self.head.head.weight)
+
+EntryClass = WanModel # 用于被register的import_model_classes扫描从模型到类的映射以自动加载模型
