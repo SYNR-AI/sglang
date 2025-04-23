@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field, root_validator
 from typing_extensions import Literal
-from sglang.srt.models.wan.utils.utils import str2bool
+from sglang.srt.configs.utils import str2bool
 
 
 class ModelCard(BaseModel):

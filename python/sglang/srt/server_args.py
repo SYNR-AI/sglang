@@ -444,6 +444,7 @@ class ServerArgs:
                 "bitsandbytes",
                 "layered",
                 "remote",
+                "wanx"
             ],
             help="The format of the model weights to load. "
             '"auto" will try to load the weights in the safetensors format '

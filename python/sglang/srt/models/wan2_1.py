@@ -1,11 +1,14 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import math
+import logging
 import os
 import types
+from typing import Optional
 from functools import partial
 
 import torch
 from torch.amp import autocast
+import torch.distributed as dist
 import torch.nn as nn
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_utils import ModelMixin
@@ -16,8 +19,6 @@ from sglang.srt.layers.wan.flashattention import flash_attention
 from sglang.srt.layers.wan.t5 import T5EncoderModel
 from sglang.srt.layers.wan.vae import WanVAE
 from sglang.srt.distributed.wan.fsdp import shard_model
-
-__all__ = ['WanModel']
 
 
 def sinusoidal_embedding_1d(dim, position):
@@ -628,14 +629,14 @@ class WanModel(ModelMixin, ConfigMixin):
         nn.init.zeros_(self.head.head.weight)
 
 
-class WanT2V(nn.Module):
+class WanT2V:
     def __init__(
         self,
         config: Config,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
     ) -> None:
-        self.device = torch.device(f"cuda:{device_id}")
+        self.device = torch.device(f"cuda:{config.device_id}")
         self.config = config.config
         self.rank = config.rank
         self.t5_cpu = config.t5_cpu
@@ -676,11 +677,12 @@ class WanT2V(nn.Module):
 
         if dist.is_initialized():
             dist.barrier()
-        if dit_fsdp:
+        if config.dit_fsdp:
             self.model = shard_fn(self.model)
         else:
             self.model.to(self.device)
 
         self.sample_neg_prompt = self.config.sample_neg_prompt
 
-EntryClass = [WanT2V] # 用于被register的import_model_classes扫描从模型到类的映射以自动加载模型
+# 用于被register的import_model_classes扫描从模型到类的映射以自动加载模型
+EntryClass = WanT2V

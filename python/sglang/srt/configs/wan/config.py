@@ -1,3 +1,4 @@
+from typing import Any, List
 from pydantic import BaseModel
 
 
@@ -15,10 +16,12 @@ class Config(BaseModel):
     out_dim: int = 16
     text_len: int = 512
 
-    config = None
+    architectures: List[str] = []
+
+    config: Any = None
     checkpoint_dir: str = ""
-    device_id: int = 0
-    rank: int = 0
+    device_id: int = None
+    rank: int = None
     t5_fsdp: bool = False
     dit_fsdp: bool = False
     use_usp: bool = False

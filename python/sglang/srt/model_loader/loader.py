@@ -60,6 +60,7 @@ from sglang.srt.utils import (
     is_pin_memory_available,
     set_weight_attrs,
 )
+from sglang.srt.models.wan2_1 import WanT2V
 
 
 @contextmanager
@@ -1400,8 +1401,33 @@ class RemoteModelLoader(BaseModelLoader):
         return model.eval()
 
 class WANXModelLoader(DefaultModelLoader):
-    def __init__(self, load_config: LoadConfig):
-        super().__init__(load_config)
+    def load_model(
+        self,
+        *,
+        model_config: ModelConfig,
+        device_config: DeviceConfig,
+    ) -> WanT2V:
+        if not model_config.hf_config.config:
+            from sglang.srt.configs.wan import WAN_CONFIGS
+            model_config.hf_config.config = WAN_CONFIGS["t2v-14B"] # FIXME: 从模型config里面识别或者是判断模型本身，最终解决方案是启动参数传入
+
+        if not model_config.hf_config.checkpoint_dir:
+            model_config.hf_config.checkpoint_dir = model_config.model_path
+
+        if model_config.hf_config.device_id is None:
+            model_config.hf_config.device_id = int(os.getenv("LOCAL_RANK", 0))
+
+        if model_config.hf_config.rank is None:
+            model_config.hf_config.rank = int(os.getenv("RANK", 0))
+
+        target_device = torch.device(device_config.device)
+        with set_default_torch_dtype(model_config.dtype):
+            with target_device:
+                model = _initialize_model(
+                    model_config,
+                    self.load_config,
+                )
+        return model
 
 
 def get_model_loader(load_config: LoadConfig) -> BaseModelLoader:
