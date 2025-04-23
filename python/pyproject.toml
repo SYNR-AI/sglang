@@ -48,6 +48,7 @@ dependencies = [
     "flash_attn",
     "gradio>=5.0.0",
     "numpy>=1.23.5,<2",
+    "xfuser>=0.4.3.post3",
 ]
 
 [project.optional-dependencies]

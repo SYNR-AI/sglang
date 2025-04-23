@@ -216,6 +216,19 @@ wheels = [
 ]
 
 [[package]]
+name = "beautifulsoup4"
+version = "4.13.4"
+source = { registry = "https://mirrors.ivolces.com/pypi/simple/" }
+dependencies = [
+    { name = "soupsieve" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://mirrors.ivolces.com/pypi/packages/d8/e4/0c4c39e18fd76d6a628d4dd8da40543d136ce2d1752bd6eeeab0791f4d6b/beautifulsoup4-4.13.4.tar.gz", hash = "sha256:dbb3c4e1ceae6aefebdaf2423247260cd062430a410e38c66f2baa50a8437195" }
+wheels = [
+    { url = "https://mirrors.ivolces.com/pypi/packages/50/cd/30110dc0ffcf3b131156077b90e9f60ed75711223f306da4db08eff8403b/beautifulsoup4-4.13.4-py3-none-any.whl", hash = "sha256:9bbbb14bfde9d79f38b8cd5f8c7c85f4b8f2523190ebed90e950a8dea4cb1c4b" },
+]
+
+[[package]]
 name = "boto3"
 version = "1.37.34"
 source = { registry = "https://mirrors.ivolces.com/pypi/simple/" }
@@ -544,6 +557,20 @@ source = { registry = "https://mirrors.ivolces.com/pypi/simple/" }
 sdist = { url = "https://mirrors.ivolces.com/pypi/packages/fc/f8/98eea607f65de6527f8a2e8885fc8015d3e6f5775df186e443e0964a11c3/distro-1.9.0.tar.gz", hash = "sha256:2fa77c6fd8940f116ee1d6b94a2f90b13b5ea8d019b98bc8bafdcabcdd9bdbed" }
 wheels = [
     { url = "https://mirrors.ivolces.com/pypi/packages/12/b3/231ffd4ab1fc9d679809f356cebee130ac7daa00d6d6f3206dd4fd137e9e/distro-1.9.0-py3-none-any.whl", hash = "sha256:7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2" },
+]
+
+[[package]]
+name = "distvae"
+version = "0.0.0b5"
+source = { registry = "https://mirrors.ivolces.com/pypi/simple/" }
+dependencies = [
+    { name = "diffusers" },
+    { name = "torch" },
+    { name = "transformers" },
+]
+sdist = { url = "https://mirrors.ivolces.com/pypi/packages/5d/d4/dcd2901874d54745512b7e8a45abc9ea555057935deda5228e33a250c026/distvae-0.0.0b5.tar.gz", hash = "sha256:4376467ed2b7d6e9e7cab0bc174e49f1771535d07eaa8d2a86ef6f537e2977f6" }
+wheels = [
+    { url = "https://mirrors.ivolces.com/pypi/packages/2b/0b/25ad7947573cb7e6e5b5443aa5f93ebc8e43ba4f535bb38e08914473b175/DistVAE-0.0.0b5-py3-none-any.whl", hash = "sha256:e0a7e302ba0935251086b788a95cc971602698b9743eb36ed4ca910ddaf286bb" },
 ]
 
 [[package]]
@@ -915,6 +942,15 @@ dependencies = [
 sdist = { url = "https://mirrors.ivolces.com/pypi/packages/33/08/c1395a292bb23fd03bdf572a1357c5a733d3eecbab877641ceacab23db6e/importlib_metadata-8.6.1.tar.gz", hash = "sha256:310b41d755445d74569f993ccfc22838295d9fe005425094fad953d7f15c8580" }
 wheels = [
     { url = "https://mirrors.ivolces.com/pypi/packages/79/9d/0fb148dc4d6fa4a7dd1d8378168d9b4cd8d4560a6fbf6f0121c5fc34eb68/importlib_metadata-8.6.1-py3-none-any.whl", hash = "sha256:02a89390c1e15fdfdc0d7c6b25cb3e62650d0494005c97d6f148bf5b9787525e" },
+]
+
+[[package]]
+name = "iniconfig"
+version = "2.1.0"
+source = { registry = "https://mirrors.ivolces.com/pypi/simple/" }
+sdist = { url = "https://mirrors.ivolces.com/pypi/packages/f2/97/ebf4da567aa6827c909642694d71c9fcf53e5b504f2d96afea02718862f3/iniconfig-2.1.0.tar.gz", hash = "sha256:3abbd2e30b36733fee78f9c7f7308f2d0050e88f0087fd25c2645f63c773e1c7" }
+wheels = [
+    { url = "https://mirrors.ivolces.com/pypi/packages/2c/e1/e6716421ea10d38022b952c159d5161ca1193197fb744506875fbb87ea7b/iniconfig-2.1.0-py3-none-any.whl", hash = "sha256:9deba5723312380e77435581c6bf4935c94cbfab9b1ed33ef8d238ea168eb760" },
 ]
 
 [[package]]
@@ -1819,6 +1855,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pluggy"
+version = "1.5.0"
+source = { registry = "https://mirrors.ivolces.com/pypi/simple/" }
+sdist = { url = "https://mirrors.ivolces.com/pypi/packages/96/2d/02d4312c973c6050a18b314a5ad0b3210edb65a906f868e31c111dede4a6/pluggy-1.5.0.tar.gz", hash = "sha256:2cffa88e94fdc978c4c574f15f9e59b7f4201d439195c3715ca9e2486f1d0cf1" }
+wheels = [
+    { url = "https://mirrors.ivolces.com/pypi/packages/88/5f/e351af9a41f866ac3f1fac4ca0613908d9a41741cfcf2228f4ad853b697d/pluggy-1.5.0-py3-none-any.whl", hash = "sha256:44e1ad92c8ca002de6377e165f3e0f1be63266ab4d554740532335b9d75ea669" },
+]
+
+[[package]]
 name = "prometheus-client"
 version = "0.21.1"
 source = { registry = "https://mirrors.ivolces.com/pypi/simple/" }
@@ -2069,6 +2114,21 @@ source = { registry = "https://mirrors.ivolces.com/pypi/simple/" }
 sdist = { url = "https://mirrors.ivolces.com/pypi/packages/bb/22/f1129e69d94ffff626bdb5c835506b3a5b4f3d070f17ea295e12c2c6f60f/pyparsing-3.2.3.tar.gz", hash = "sha256:b9c13f1ab8b3b542f72e28f634bad4de758ab3ce4546e4301970ad6fa77c38be" }
 wheels = [
     { url = "https://mirrors.ivolces.com/pypi/packages/05/e7/df2285f3d08fee213f2d041540fa4fc9ca6c2d44cf36d3a035bf2a8d2bcc/pyparsing-3.2.3-py3-none-any.whl", hash = "sha256:a749938e02d6fd0b59b356ca504a24982314bb090c383e3cf201c95ef7e2bfcf" },
+]
+
+[[package]]
+name = "pytest"
+version = "8.3.5"
+source = { registry = "https://mirrors.ivolces.com/pypi/simple/" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "iniconfig" },
+    { name = "packaging" },
+    { name = "pluggy" },
+]
+sdist = { url = "https://mirrors.ivolces.com/pypi/packages/ae/3c/c9d525a414d506893f0cd8a8d0de7706446213181570cdbd766691164e40/pytest-8.3.5.tar.gz", hash = "sha256:f4efe70cc14e511565ac476b57c279e12a855b11f48f212af1080ef2263d3845" }
+wheels = [
+    { url = "https://mirrors.ivolces.com/pypi/packages/30/3d/64ad57c803f1fa1e963a7946b6e0fea4a70df53c1a7fed304586539c2bac/pytest-8.3.5-py3-none-any.whl", hash = "sha256:c69214aa47deac29fad6c2a4f590b9c4a9fdb16a403176fe154b79c0b4d4d820" },
 ]
 
 [[package]]
@@ -2583,6 +2643,7 @@ dependencies = [
     { name = "transformers" },
     { name = "uvicorn" },
     { name = "uvloop" },
+    { name = "xfuser" },
     { name = "zmq" },
 ]
 
@@ -3227,6 +3288,7 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'runtime-common'" },
     { name = "uvloop", specifier = ">=0.21.0" },
     { name = "uvloop", marker = "extra == 'runtime-common'" },
+    { name = "xfuser", specifier = ">=0.4.3.post3" },
     { name = "xgrammar", marker = "extra == 'runtime-common'", specifier = "==0.1.17" },
     { name = "zmq", specifier = ">=0.0.0" },
 ]
@@ -3276,6 +3338,15 @@ wheels = [
     { url = "https://mirrors.ivolces.com/pypi/packages/57/5e/70bdd9579b35003a489fc850b5047beeda26328053ebadc1fb60f320f7db/soundfile-0.13.1-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:03267c4e493315294834a0870f31dbb3b28a95561b80b134f0bd3cf2d5f0e618" },
     { url = "https://mirrors.ivolces.com/pypi/packages/fe/df/8c11dc4dfceda14e3003bb81a0d0edcaaf0796dd7b4f826ea3e532146bba/soundfile-0.13.1-py2.py3-none-win32.whl", hash = "sha256:c734564fab7c5ddf8e9be5bf70bab68042cd17e9c214c06e365e20d64f9a69d5" },
     { url = "https://mirrors.ivolces.com/pypi/packages/14/e9/6b761de83277f2f02ded7e7ea6f07828ec78e4b229b80e4ca55dd205b9dc/soundfile-0.13.1-py2.py3-none-win_amd64.whl", hash = "sha256:1e70a05a0626524a69e9f0f4dd2ec174b4e9567f4d8b6c11d38b5c289be36ee9" },
+]
+
+[[package]]
+name = "soupsieve"
+version = "2.7"
+source = { registry = "https://mirrors.ivolces.com/pypi/simple/" }
+sdist = { url = "https://mirrors.ivolces.com/pypi/packages/3f/f4/4a80cd6ef364b2e8b65b15816a843c0980f7a5a2b4dc701fc574952aa19f/soupsieve-2.7.tar.gz", hash = "sha256:ad282f9b6926286d2ead4750552c8a6142bc4c783fd66b0293547c8fe6ae126a" }
+wheels = [
+    { url = "https://mirrors.ivolces.com/pypi/packages/e7/9c/0e6afc12c269578be5c0c1c9f4b49a8d32770a080260c333ac04cc1c832d/soupsieve-2.7-py3-none-any.whl", hash = "sha256:6e60cc5c1ffaf1cebcc12e8188320b72071e922c2e897f737cadce79ad5d30c4" },
 ]
 
 [[package]]
@@ -3638,6 +3709,29 @@ wheels = [
 ]
 
 [[package]]
+name = "xfuser"
+version = "0.4.3.post3"
+source = { registry = "https://mirrors.ivolces.com/pypi/simple/" }
+dependencies = [
+    { name = "accelerate" },
+    { name = "beautifulsoup4" },
+    { name = "distvae" },
+    { name = "einops" },
+    { name = "imageio" },
+    { name = "imageio-ffmpeg" },
+    { name = "opencv-python" },
+    { name = "pytest" },
+    { name = "sentencepiece" },
+    { name = "torch" },
+    { name = "transformers" },
+    { name = "yunchang" },
+]
+sdist = { url = "https://mirrors.ivolces.com/pypi/packages/83/6a/793cc9dddd7583bf94ef1633e8808907e87e5233bf4141c9d55dbc444585/xfuser-0.4.3.post3.tar.gz", hash = "sha256:d5b3efce43a6df0e83ba5006c22afe0b1d46f4c168e478405bfa6f07579eea0d" }
+wheels = [
+    { url = "https://mirrors.ivolces.com/pypi/packages/e5/d5/faed90cbcf258a5278614434b122b26dd8d91c1a076f58b5e42d4b98d378/xfuser-0.4.3.post3-py3-none-any.whl", hash = "sha256:b9d84f313b1c29305ba7539e1ccbf7061725346421c7f8c19905491737a0d9d6" },
+]
+
+[[package]]
 name = "xgrammar"
 version = "0.1.17"
 source = { registry = "https://mirrors.ivolces.com/pypi/simple/" }
@@ -3747,6 +3841,15 @@ wheels = [
     { url = "https://mirrors.ivolces.com/pypi/packages/a9/4a/4833a134c76af987eff3ce8cb71e42932234120e6be061eb2555061e8844/yarl-1.19.0-cp313-cp313-win32.whl", hash = "sha256:24e4c367ad69988a2283dd45ea88172561ca24b2326b9781e164eb46eea68345" },
     { url = "https://mirrors.ivolces.com/pypi/packages/32/e9/59327daab3af8f79221638a8f0d11474d20f6a8fbc41e9da80c5ef69e688/yarl-1.19.0-cp313-cp313-win_amd64.whl", hash = "sha256:0110f91c57ab43d1538dfa92d61c45e33b84df9257bd08fcfcda90cce931cbc9" },
     { url = "https://mirrors.ivolces.com/pypi/packages/a4/06/ae25a353e8f032322df6f30d6bb1fc329773ee48e1a80a2196ccb8d1206b/yarl-1.19.0-py3-none-any.whl", hash = "sha256:a727101eb27f66727576630d02985d8a065d09cd0b5fcbe38a5793f71b2a97ef" },
+]
+
+[[package]]
+name = "yunchang"
+version = "0.6.3.post1"
+source = { registry = "https://mirrors.ivolces.com/pypi/simple/" }
+sdist = { url = "https://mirrors.ivolces.com/pypi/packages/34/15/b86d4b7717c95f0483b83ddf52e54cd8de00040146af03beb53047860bae/yunchang-0.6.3.post1.tar.gz", hash = "sha256:59395eb9ac7de6f0b4a21f974ac622cdab1878df04e3bf76bf5c3f8a4286b885" }
+wheels = [
+    { url = "https://mirrors.ivolces.com/pypi/packages/b1/7f/d2bc413a1e503d9cd16dbe14ac94564543a83ddcb80901113eed61057f1c/yunchang-0.6.3.post1-py3-none-any.whl", hash = "sha256:4e6f5878d63c525ece927345f8fe1989abe304e4b446f883be3224a230db1397" },
 ]
 
 [[package]]

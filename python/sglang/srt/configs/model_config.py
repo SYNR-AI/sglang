@@ -18,7 +18,6 @@ import math
 import os
 from enum import IntEnum, auto
 from typing import List, Optional, Set, Union
-from types import SimpleNamespace
 
 import torch
 from transformers import PretrainedConfig
@@ -26,6 +25,7 @@ from transformers import PretrainedConfig
 from sglang.srt.hf_transformers_utils import get_config, get_context_length
 from sglang.srt.layers.quantization import QUANTIZATION_METHODS
 from sglang.srt.utils import get_bool_env_var, is_hip
+from sglang.srt.configs.wan.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -418,7 +418,7 @@ class ModelConfig:
         with open(self.config_path, "r", encoding="utf-8") as f:
             config = json.load(f)
 
-        self.hf_config = SimpleNamespace(**config)
+        self.hf_config = Config(**config)
 
         logger.info(f"配置详情: {self.hf_config}")
         return True

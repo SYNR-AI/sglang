@@ -1,5 +1,8 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import math
+import os
+import types
+from functools import partial
 
 import torch
 from torch.amp import autocast
@@ -7,7 +10,12 @@ import torch.nn as nn
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_utils import ModelMixin
 
-from sglang.srt.layers.attention.flashattention import flash_attention
+from sglang.srt.configs.wan.config import Config
+from sglang.srt.layers.quantization.base_config import QuantizationConfig
+from sglang.srt.layers.wan.flashattention import flash_attention
+from sglang.srt.layers.wan.t5 import T5EncoderModel
+from sglang.srt.layers.wan.vae import WanVAE
+from sglang.srt.distributed.wan.fsdp import shard_model
 
 __all__ = ['WanModel']
 
@@ -619,4 +627,60 @@ class WanModel(ModelMixin, ConfigMixin):
         # init output layer
         nn.init.zeros_(self.head.head.weight)
 
-EntryClass = WanModel # 用于被register的import_model_classes扫描从模型到类的映射以自动加载模型
+
+class WanT2V(nn.Module):
+    def __init__(
+        self,
+        config: Config,
+        quant_config: Optional[QuantizationConfig] = None,
+        prefix: str = "",
+    ) -> None:
+        self.device = torch.device(f"cuda:{device_id}")
+        self.config = config.config
+        self.rank = config.rank
+        self.t5_cpu = config.t5_cpu
+
+        self.num_train_timesteps = self.config.num_train_timesteps
+        self.param_dtype = self.config.param_dtype
+
+        shard_fn = partial(shard_model, device_id=config.device_id)
+        self.text_encoder = T5EncoderModel(
+            text_len=self.config.text_len,
+            dtype=self.config.t5_dtype,
+            device=torch.device('cpu'),
+            checkpoint_path=os.path.join(config.checkpoint_dir, self.config.t5_checkpoint),
+            tokenizer_path=os.path.join(config.checkpoint_dir, self.config.t5_tokenizer),
+            shard_fn=shard_fn if config.t5_fsdp else None,
+        )
+
+        self.vae_stride = self.config.vae_stride
+        self.patch_size = self.config.patch_size
+        self.vae = WanVAE(
+            vae_pth=os.path.join(config.checkpoint_dir, self.config.vae_checkpoint),
+            device=self.device)
+
+        logging.info(f"Creating WanModel from {config.checkpoint_dir}")
+        self.model = WanModel.from_pretrained(config.checkpoint_dir)
+        self.model.eval().requires_grad_(False)
+
+        if config.use_usp:
+            from xfuser.core.distributed import get_sequence_parallel_world_size
+
+            from sglang.srt.distributed.wan.xdit_context_parallel import (usp_attn_forward, usp_dit_forward)
+            for block in self.model.blocks:
+                block.self_attn.forward = types.MethodType(usp_attn_forward, block.self_attn)
+            self.model.forward = types.MethodType(usp_dit_forward, self.model)
+            self.sp_size = get_sequence_parallel_world_size()
+        else:
+            self.sp_size = 1
+
+        if dist.is_initialized():
+            dist.barrier()
+        if dit_fsdp:
+            self.model = shard_fn(self.model)
+        else:
+            self.model.to(self.device)
+
+        self.sample_neg_prompt = self.config.sample_neg_prompt
+
+EntryClass = [WanT2V] # 用于被register的import_model_classes扫描从模型到类的映射以自动加载模型

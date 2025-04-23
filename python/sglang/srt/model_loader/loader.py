@@ -1399,7 +1399,7 @@ class RemoteModelLoader(BaseModelLoader):
         logger.info("Loaded weights from remote storage in %.2f seconds.", end - start)
         return model.eval()
 
-class WANXModelLoader(BaseModelLoader):
+class WANXModelLoader(DefaultModelLoader):
     def __init__(self, load_config: LoadConfig):
         super().__init__(load_config)
 
