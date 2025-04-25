@@ -67,19 +67,25 @@ class ModelConfig:
 
         self.config_path = os.path.join(self.model_path, "config.json")
         if self.load_config() and self.hf_config.model_type in dit_model_types:
-            self.is_generation = True
+            self.is_generation = False # 目前不由sglang rt开启cuda graph
             self.is_multimodal = False # 开启会不管是否跳过Tokenizer都会另外启动一个用于图像处理的Tokenizer
             self.is_multimodal_gen = True
             self.is_image_gen = True
             self.is_audio_model = False
+            self.is_encoder_decoder = is_encoder_decoder_model(self.hf_config.architectures) # 这里决定了用怎么样的注意力窗口
 
             self.attention_arch = None # 这里会是是否启用self.use_mla_backend的一个因素
             self.attention_chunk_size = None
 
             self.dtype = _get_and_verify_dtype(self.hf_config, dtype) # 需要指定默认的精度FP16
 
-            self.context_len = context_length
+            self.context_len = context_length or self.hf_config.text_len
             self.image_token_id = None
+
+            # 构建内存池需要的一些参数
+            self.head_dim = self.hf_config.dim // self.hf_config.num_heads
+            self.num_attention_heads = self.hf_config.num_heads
+            self.num_hidden_layers = self.hf_config.num_layers
 
             # Verify quantization
             self._verify_quantization()
@@ -262,7 +268,10 @@ class ModelConfig:
 
     def get_num_kv_heads(self, tensor_parallel_size) -> int:
         """Returns the number of KV heads per GPU."""
-        total_num_kv_heads = self.get_total_num_kv_heads()
+        if hasattr(self.hf_config, "num_heads"):
+            total_num_kv_heads = self.hf_config.num_heads
+        else:
+            total_num_kv_heads = self.get_total_num_kv_heads()
         # If tensor parallelism is used, we divide the number of KV heads by
         # the tensor parallel size. We will replicate the KV heads in the
         # case where the number of KV heads is smaller than the tensor
@@ -578,9 +587,13 @@ def is_image_gen_model(model_architectures: List[str]):
 def is_audio_model(model_architectures: List[str]):
     return False
 
+encoder_decodeer_models = [
+    "WanT2V",
+    "MllamaForConditionalGeneration"
+]
 
 def is_encoder_decoder_model(model_architectures: List[str]):
-    return "MllamaForConditionalGeneration" in model_architectures
+    return any( i in model_architectures for i in encoder_decodeer_models)
 
 
 def yarn_get_mscale(scale: float = 1, mscale: float = 1) -> float:
